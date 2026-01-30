@@ -1,18 +1,17 @@
 {
-  "name": "laravel-herd-worktree",
+  "name": "herd-worktree",
   "version": "1.0.0",
-  "description": "Set up git worktrees for Laravel projects with Laravel Herd integration",
+  "description": "Set up git worktrees for any project with Laravel Herd integration",
   "author": {
     "name": "Harris Raftopoulos"
   },
   "license": "MIT",
   "keywords": [
-    "laravel",
     "herd",
     "worktree",
     "git",
     "development",
     "workflow"
   ],
-  "repository": "https://github.com/harris21/laravel-herd-worktree"
+  "repository": "https://github.com/kevnk/herd-worktree"
 }
