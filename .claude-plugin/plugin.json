@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Set up git worktrees for any project with Laravel Herd integration",
   "author": {
-    "name": "Harris Raftopoulos"
+    "name": "Kevin Kirchner"
   },
   "license": "MIT",
   "keywords": [
