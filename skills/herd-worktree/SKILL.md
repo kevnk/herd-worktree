@@ -56,9 +56,24 @@ AskUserQuestion:
       description: "Experimental/testing branch"
 ```
 
-**Note:** The branch name will be sanitized for the Herd link (slashes replaced with dashes). For example, `feature/new-feature` becomes `feature-new-feature.test`.
+**Note:** The branch name will be sanitized for the Herd link (slashes replaced with dashes), and the worktree URL will be a subdomain of the parent project. For example, if the parent project is `my-app.test` and the branch is `feature/new-feature`, the worktree URL becomes `http://feature-new-feature.my-app.test`.
 
-### 1. Create Worktree (if needed)
+### 1. Detect Parent Project's Herd Link
+
+Before creating the worktree, detect the parent project's Herd link name:
+
+```bash
+# Get the parent project directory name (used as fallback)
+PARENT_DIR=$(basename "$(pwd)")
+
+# Check if the parent is already linked in Herd
+PARENT_LINK=$(herd links | grep "$(pwd)" | awk '{print $2}' | head -1)
+
+# Use the Herd link name if found, otherwise use directory name
+PARENT_DOMAIN=${PARENT_LINK:-$PARENT_DIR}
+```
+
+### 2. Create Worktree (if needed)
 
 ```bash
 # Check if worktree exists
@@ -68,18 +83,28 @@ git worktree list | grep "$BRANCH_NAME"
 git worktree add .worktrees/$SANITIZED_BRANCH_NAME -b $BRANCH_NAME
 ```
 
-### 2. Link with Laravel Herd
+### 3. Link with Laravel Herd (Subdomain Pattern)
+
+The worktree is linked as a **subdomain** of the parent project, making the relationship clear:
 
 ```bash
-cd /path/to/project/.worktrees/$BRANCH_NAME
-herd link $BRANCH_NAME
+cd /path/to/project/.worktrees/$SANITIZED_BRANCH_NAME
+
+# Link as subdomain: {branch}.{parent}.test
+# Example: feature-new-feature.my-app.test
+herd link $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN
 ```
 
-This creates a site at `http://$BRANCH_NAME.test`
+This creates a site at `http://$SANITIZED_BRANCH_NAME.$PARENT_DOMAIN.test`
+
+**Example URLs:**
+- Parent project: `http://my-app.test`
+- Worktree for `feature/login`: `http://feature-login.my-app.test`
+- Worktree for `bugfix/auth`: `http://bugfix-auth.my-app.test`
 
 **Note:** Do NOT run `herd secure` - the site should use HTTP to avoid mixed content issues with dev servers.
 
-### 3. Configure Environment
+### 4. Configure Environment
 
 **First, check if .env exists in the main project:**
 
@@ -108,9 +133,9 @@ AskUserQuestion:
 # Copy .env from main project
 cp /path/to/main/project/.env /path/to/worktree/.env
 
-# Update any .test URLs to use the worktree domain
-# This replaces any URL like http://something.test or https://something.test with http://$BRANCH_NAME.test
-sed -i '' "s|//[^/]*\.test|//$BRANCH_NAME.test|g" /path/to/worktree/.env
+# Update any .test URLs to use the worktree subdomain
+# This replaces any URL like http://parent.test with http://$BRANCH_NAME.parent.test
+sed -i '' "s|//$PARENT_DOMAIN\.test|//$SANITIZED_BRANCH_NAME.$PARENT_DOMAIN.test|g" /path/to/worktree/.env
 ```
 
 **If "Copy without changes":**
@@ -119,7 +144,7 @@ sed -i '' "s|//[^/]*\.test|//$BRANCH_NAME.test|g" /path/to/worktree/.env
 cp /path/to/main/project/.env /path/to/worktree/.env
 ```
 
-### 4. Install Dependencies
+### 5. Install Dependencies
 
 **CRITICAL: Worktrees do NOT share vendor/, node_modules/, or other dependency directories with the main project.**
 
@@ -263,8 +288,8 @@ After the PR is merged, clean up the worktree:
 ```bash
 # From main project directory
 cd /path/to/main/project
-herd unlink $BRANCH_NAME
-git worktree remove .worktrees/$BRANCH_NAME
+herd unlink $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN
+git worktree remove .worktrees/$SANITIZED_BRANCH_NAME
 git branch -d TASK_NUMBER-branch-name  # Delete local branch
 ```
 
@@ -314,11 +339,11 @@ The `--no-commit` flag stages the changes without committing, allowing the user 
 After the merge is staged:
 
 ```bash
-# Unlink from Herd
-herd unlink $BRANCH_NAME
+# Unlink from Herd (use the subdomain link name)
+herd unlink $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN
 
 # Remove the worktree
-git worktree remove .worktrees/$BRANCH_NAME
+git worktree remove .worktrees/$SANITIZED_BRANCH_NAME
 
 # Delete the worktree branch (it's now merged)
 git branch -D $BRANCH_NAME
@@ -341,11 +366,11 @@ You can now:
 When abandoning a worktree without merging:
 
 ```bash
-# Unlink from Herd
-herd unlink $BRANCH_NAME
+# Unlink from Herd (use the subdomain link name)
+herd unlink $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN
 
 # Remove worktree
-git worktree remove .worktrees/$BRANCH_NAME
+git worktree remove .worktrees/$SANITIZED_BRANCH_NAME
 
 # Delete branch if not needed
 git branch -D $BRANCH_NAME
@@ -355,21 +380,23 @@ git branch -D $BRANCH_NAME
 
 | Step | Command |
 |------|---------|
-| Create worktree | `git worktree add .worktrees/NAME -b NAME` |
-| Link to Herd | `herd link NAME` |
-| Copy .env | `cp ../../../.env .env` |
-| Update URLs | `sed -i '' "s\|//[^/]*\.test\|//$NAME.test\|g" .env` |
-| Unlink | `herd unlink NAME` |
-| Remove worktree | `git worktree remove .worktrees/NAME` |
+| Detect parent | `PARENT_DOMAIN=$(basename "$(pwd)")` |
+| Create worktree | `git worktree add .worktrees/BRANCH -b BRANCH` |
+| Link to Herd | `herd link BRANCH.PARENT_DOMAIN` |
+| Copy .env | `cp ../.env .env` |
+| Update URLs | `sed -i '' "s\|//$PARENT_DOMAIN\.test\|//$BRANCH.$PARENT_DOMAIN.test\|g" .env` |
+| Unlink | `herd unlink BRANCH.PARENT_DOMAIN` |
+| Remove worktree | `git worktree remove .worktrees/BRANCH` |
 
 ## Troubleshooting
 
 ### Site not loading
 - **Cause:** Herd link doesn't exist or is misconfigured
 - **Fix:**
-  1. Verify link exists: `herd links`
-  2. If missing, create it: `herd link $BRANCH_NAME`
+  1. Verify link exists: `herd links | grep $BRANCH_NAME`
+  2. If missing, create it: `herd link $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN`
   3. Ensure Herd is running
+  4. Verify the URL uses subdomain pattern: `http://branch.parent.test`
 
 ### Missing dependencies
 - **Cause:** Worktrees don't share dependency directories
@@ -381,10 +408,10 @@ git branch -D $BRANCH_NAME
   - Go: `go mod download`
 
 ### Wrong domain in config
-- **Cause:** .env URLs still point to the original domain
-- **Fix:** Update .env URLs to use the worktree domain:
+- **Cause:** .env URLs still point to the parent domain instead of worktree subdomain
+- **Fix:** Update .env URLs to use the worktree subdomain:
   ```bash
-  sed -i '' "s|//[^/]*\.test|//$BRANCH_NAME.test|g" .env
+  sed -i '' "s|//$PARENT_DOMAIN\.test|//$SANITIZED_BRANCH_NAME.$PARENT_DOMAIN.test|g" .env
   ```
 
 ### Port conflicts
@@ -398,19 +425,20 @@ git branch -D $BRANCH_NAME
 ### Mixed content errors
 - **Cause:** HTTPS site trying to load HTTP assets
 - **Fix:**
-  1. Unsecure the site: `herd unsecure $BRANCH_NAME`
+  1. Unsecure the site: `herd unsecure $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN`
   2. Update URLs to use `http://` instead of `https://`
 
 ## Checklist
 
 Before considering setup complete, verify:
 
-- [ ] Worktree created at `.worktrees/$BRANCH_NAME`
-- [ ] Herd link created (`herd link $BRANCH_NAME`)
+- [ ] Parent domain identified (`$PARENT_DOMAIN`)
+- [ ] Worktree created at `.worktrees/$SANITIZED_BRANCH_NAME`
+- [ ] Herd link created as subdomain (`herd link $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN`)
 - [ ] Site is NOT secured (use HTTP, not HTTPS)
-- [ ] .env copied (if applicable) with URLs updated
+- [ ] .env copied (if applicable) with URLs updated to subdomain
 - [ ] Dependencies installed (composer/npm/etc.)
-- [ ] Site accessible at `http://$BRANCH_NAME.test`
+- [ ] Site accessible at `http://$SANITIZED_BRANCH_NAME.$PARENT_DOMAIN.test`
 
 ## CRITICAL: Working Directory After Setup
 
@@ -418,12 +446,13 @@ Before considering setup complete, verify:
 
 The worktree is a separate copy of the codebase. Using the main repo path will edit the wrong files.
 
-- **Worktree path:** `/path/to/project/.worktrees/$BRANCH_NAME/`
-- **All file reads, edits, and writes** must use the worktree absolute path (e.g., `/path/to/project/.worktrees/$BRANCH_NAME/app/...`)
+- **Worktree path:** `/path/to/project/.worktrees/$SANITIZED_BRANCH_NAME/`
+- **Worktree URL:** `http://$SANITIZED_BRANCH_NAME.$PARENT_DOMAIN.test`
+- **All file reads, edits, and writes** must use the worktree absolute path
 - **All Bash commands** must run from the worktree directory
 - **All git operations** must run from the worktree directory
 
-**After setup, remind the user and any subsequent agents:** "All work for this task should use the worktree at `/path/to/project/.worktrees/$BRANCH_NAME/`. Do not modify files in the main project directory."
+**After setup, remind the user and any subsequent agents:** "All work for this task should use the worktree at `/path/to/project/.worktrees/$SANITIZED_BRANCH_NAME/` accessible at `http://$SANITIZED_BRANCH_NAME.$PARENT_DOMAIN.test`. Do not modify files in the main project directory."
 
 ## Integration
 
