@@ -75,6 +75,46 @@ PARENT_DOMAIN=${PARENT_LINK:-$PARENT_DIR}
 
 ### 2. Create Worktree (if needed)
 
+**First, check that `.worktrees/` is git-ignored.** If it isn't, the main project's `git status` lists `.worktrees/` as untracked:
+
+```bash
+git check-ignore -q .worktrees/ && echo "ignored"
+```
+
+**If it prints nothing, use AskUserQuestion. Don't change `.gitignore` without asking:**
+
+```
+AskUserQuestion:
+  question: "`.worktrees/` isn't git-ignored in this project. How should I handle it?"
+  header: "Gitignore"
+  options:
+    - label: "Add to .gitignore (Recommended)"
+      description: "Append `.worktrees/` to the project's .gitignore. You commit that change yourself"
+    - label: "Ignore locally only"
+      description: "Add it to .git/info/exclude, which affects only this clone"
+    - label: "Leave it"
+      description: "Change nothing. `git status` in the main project will list .worktrees/"
+```
+
+**If "Add to .gitignore":**
+
+```bash
+# Start a new line if .gitignore doesn't end with one
+if [ -n "$(tail -c1 .gitignore 2>/dev/null)" ]; then echo >> .gitignore; fi
+echo ".worktrees/" >> .gitignore
+```
+
+**If "Ignore locally only":**
+
+```bash
+EXCLUDE_FILE=$(git rev-parse --git-path info/exclude)
+mkdir -p "$(dirname "$EXCLUDE_FILE")"
+if [ -n "$(tail -c1 "$EXCLUDE_FILE" 2>/dev/null)" ]; then echo >> "$EXCLUDE_FILE"; fi
+echo ".worktrees/" >> "$EXCLUDE_FILE"
+```
+
+**Then create the worktree:**
+
 ```bash
 # Check if worktree exists
 git worktree list | grep "$BRANCH_NAME"
@@ -267,12 +307,15 @@ git branch -m old-branch-name TASK_NUMBER-descriptive-name
 
 #### A.3. Push and Create PR
 
-**Note:** The base branch defaults to `develop`. Adjust to your project's default branch (e.g., `main` or `master`) if different. You can detect the default branch with:
-```bash
-git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'
-```
+Set `DEFAULT_BRANCH` before `gh pr create`, in the same shell. It uses the remote's default branch, then the default GitHub reports, then `main`. If the project merges feature work into another branch (for example `develop`), set `DEFAULT_BRANCH` to that branch instead.
 
 ```bash
+DEFAULT_BRANCH=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)
+DEFAULT_BRANCH=${DEFAULT_BRANCH#origin/}
+[ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null)
+DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
+echo "PR base: $DEFAULT_BRANCH"
+
 git push -u origin BRANCH_NAME
 
 # Based on user's PR description preference:
@@ -313,12 +356,32 @@ AskUserQuestion:
       description: "Go back without transferring"
 ```
 
-#### B.2. Prepare for Merge
+#### B.2. Check the Worktree Is Clean
+
+The merge brings over committed work only. Uncommitted edits in the worktree would be left behind, and `git worktree remove` would refuse to remove the worktree later. Check first:
 
 ```bash
 # Navigate to main project directory
 cd /path/to/main/project
+
+# Prints nothing when the worktree is clean
+git -C .worktrees/$SANITIZED_BRANCH_NAME status --porcelain
 ```
+
+**If it prints anything, stop.** Show the user the list, then use AskUserQuestion:
+
+```
+AskUserQuestion:
+  question: "The worktree has uncommitted changes, and the transfer would leave them behind. What should I do?"
+  header: "Uncommitted"
+  options:
+    - label: "Commit them first (Recommended)"
+      description: "Commit the changes on the worktree branch, then continue the transfer"
+    - label: "Cancel"
+      description: "Stop here and leave the worktree as it is"
+```
+
+If they choose to commit, run `git add -A && git commit` inside the worktree, then run the check again. Continue to B.3 only when the check prints nothing.
 
 #### B.3. Merge Worktree Branch
 
@@ -333,31 +396,31 @@ The `--no-commit` flag stages the changes without committing, allowing the user 
 - Inform the user about the conflicts
 - List the conflicting files
 - Ask if they want to resolve them now or abort
+- If they abort, run `git merge --abort` and stop. The branch and worktree are untouched
 
-#### B.4. Clean Up Worktree
+#### B.4. Remove the Worktree (Keep the Branch)
 
 After the merge is staged:
 
 ```bash
-# Unlink from Herd (use the subdomain link name)
-herd unlink $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN
-
-# Remove the worktree
-git worktree remove .worktrees/$SANITIZED_BRANCH_NAME
-
-# Delete the worktree branch (it's now merged)
-git branch -D $BRANCH_NAME
+# Remove the worktree, then unlink from Herd only if that worked
+git worktree remove .worktrees/$SANITIZED_BRANCH_NAME && herd unlink $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN
 ```
+
+**If `git worktree remove` fails, stop and tell the user why.** Don't retry with `--force`, which deletes uncommitted files. Don't tell the user the cleanup is done.
+
+**Don't delete `$BRANCH_NAME` yet.** The merge is staged, not committed. If the user runs `git merge --abort`, the branch is the only thing still pointing at the worktree's commits.
 
 #### B.5. Final Steps
 
 **Inform the user:**
-"Your changes have been merged into the main directory and are staged for commit. The worktree has been cleaned up.
+"Your changes have been merged into the main directory and are staged for commit. The worktree has been removed. The `$BRANCH_NAME` branch stays until you commit, so `git merge --abort` can't lose your work.
 
 You can now:
 - Review the changes with `git status` and `git diff --cached`
 - Commit when ready with `git commit`
-- Or unstage specific files if needed with `git reset HEAD <file>`"
+- Or unstage specific files if needed with `git reset HEAD <file>`
+- After you commit, delete the branch with `git branch -d $BRANCH_NAME` (it refuses if the merge isn't committed)"
 
 ---
 
@@ -433,6 +496,7 @@ git branch -D $BRANCH_NAME
 Before considering setup complete, verify:
 
 - [ ] Parent domain identified (`$PARENT_DOMAIN`)
+- [ ] `.worktrees/` is git-ignored, or the user chose to leave it
 - [ ] Worktree created at `.worktrees/$SANITIZED_BRANCH_NAME`
 - [ ] Herd link created as subdomain (`herd link $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN`)
 - [ ] Site is NOT secured (use HTTP, not HTTPS)
