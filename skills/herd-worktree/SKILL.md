@@ -292,7 +292,7 @@ AskUserQuestion:
 #### A.1. Commit All Changes
 
 ```bash
-cd /path/to/project/.worktrees/$BRANCH_NAME
+cd /path/to/project/.worktrees/$SANITIZED_BRANCH_NAME
 git add -A
 git commit -m "Your commit message (#TASK_NUMBER)"  # Omit (#TASK_NUMBER) if none provided
 ```
@@ -307,22 +307,30 @@ git branch -m old-branch-name TASK_NUMBER-descriptive-name
 
 #### A.3. Push and Create PR
 
-Set `DEFAULT_BRANCH` before `gh pr create`, in the same shell. It uses the remote's default branch, then the default GitHub reports, then `main`. If the project merges feature work into another branch (for example `develop`), set `DEFAULT_BRANCH` to that branch instead.
+Set `PR_REPO` and `DEFAULT_BRANCH` before `gh pr create`, in the same shell.
+
+- `PR_REPO` is the `owner/repo` of `origin`. Always pass it with `--repo`. In a fork, a bare `gh` command can pick the upstream repo and open the PR there.
+- `DEFAULT_BRANCH` uses the remote's default branch, then the default GitHub reports, then `main`. If the project merges feature work into another branch (for example `develop`), set `DEFAULT_BRANCH` to that branch instead.
 
 ```bash
+PR_REPO=$(git remote get-url origin | sed -E 's#^[a-z+]+://##; s#^[^@/]*@##; s#^[^/:]+[:/]##; s#\.git$##; s#/$##')
+echo "PR repo: $PR_REPO"
+
 DEFAULT_BRANCH=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)
 DEFAULT_BRANCH=${DEFAULT_BRANCH#origin/}
-[ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null)
+[ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=$(gh repo view "$PR_REPO" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null)
 DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
 echo "PR base: $DEFAULT_BRANCH"
 
 git push -u origin BRANCH_NAME
 
 # Based on user's PR description preference:
-# - "I'll write it" or "Leave empty": gh pr create --base $DEFAULT_BRANCH --title "Title" --body ""
+# - "I'll write it" or "Leave empty": gh pr create --repo "$PR_REPO" --base $DEFAULT_BRANCH --title "Title" --body ""
 # - "Generate for me": Generate description from git diff, then use --body "$DESCRIPTION"
-gh pr create --base $DEFAULT_BRANCH --title "Description (#TASK_NUMBER)" --body "$BODY"
+gh pr create --repo "$PR_REPO" --base $DEFAULT_BRANCH --title "Description (#TASK_NUMBER)" --body "$BODY"
 ```
+
+**If `PR repo:` prints something that isn't `owner/repo`, stop and ask the user which repo the PR belongs in.** Don't run `gh pr create` without `--repo`.
 
 #### A.4. Cleanup After Merge
 
@@ -426,18 +434,53 @@ You can now:
 
 ### Option C: Abandon Changes
 
-When abandoning a worktree without merging:
+Abandoning deletes work for good, so show the user what will be lost and confirm before running anything.
+
+#### C.1. Show What Will Be Lost
 
 ```bash
-# Unlink from Herd (use the subdomain link name)
-herd unlink $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN
+# From main project directory
+cd /path/to/main/project
 
-# Remove worktree
-git worktree remove .worktrees/$SANITIZED_BRANCH_NAME
+# Uncommitted and untracked files in the worktree
+git -C .worktrees/$SANITIZED_BRANCH_NAME status --porcelain
 
-# Delete branch if not needed
+# Commits that are only on this branch (deleting the branch loses them)
+git log --oneline $BRANCH_NAME --not --exclude=$BRANCH_NAME --branches --remotes
+```
+
+#### C.2. Confirm
+
+Show both lists in the question. If both are empty, say so.
+
+```
+AskUserQuestion:
+  question: "Abandon $BRANCH_NAME? This deletes the files and commits listed above, and they can't be recovered."
+  header: "Abandon"
+  options:
+    - label: "Cancel"
+      description: "Keep the worktree and the branch as they are"
+    - label: "Delete worktree and branch"
+      description: "Remove the worktree, uncommitted changes included, unlink it from Herd, and delete the branch"
+    - label: "Delete worktree, keep branch"
+      description: "Remove the worktree and unlink it from Herd. The branch and its commits stay"
+```
+
+**If "Cancel", stop.** Run nothing.
+
+#### C.3. Remove
+
+`--force` is required here. Without it, `git worktree remove` refuses a worktree with uncommitted or untracked files, which is exactly the case where the user is abandoning changes.
+
+```bash
+# Remove the worktree (uncommitted changes included), then unlink from Herd only if that worked
+git worktree remove --force .worktrees/$SANITIZED_BRANCH_NAME && herd unlink $SANITIZED_BRANCH_NAME.$PARENT_DOMAIN
+
+# Only if "Delete worktree and branch"
 git branch -D $BRANCH_NAME
 ```
+
+**If `git worktree remove --force` fails, stop and show the user the error.** Don't delete the branch.
 
 ## Quick Reference
 
